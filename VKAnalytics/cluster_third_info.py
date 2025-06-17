@@ -1,0 +1,173 @@
+import pandas as pd
+import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import LabelEncoder
+import matplotlib.pyplot as plt
+import mplcursors
+from collections import Counter
+import tkinter as tk
+from tkinter import messagebox
+
+
+def get_clusterization_three_info():
+    # Получаем значения параметров из интерфейса
+    def save_parameters():
+        global cluster_count, group_count
+        try:
+            cluster_count = int(entry_cluster_count.get())
+            group_count = int(entry_group_count.get())
+
+            messagebox.showinfo("Успех",
+                                f"Параметры успешно сохранены!\nКластеры: {cluster_count}\nГруппы: {group_count}")
+            window.destroy()
+            get_clusterization_three()  # Запуск кластеризации с новыми параметрами
+        except ValueError:
+            messagebox.showerror("Ошибка", "Пожалуйста, введите числовые значения.")
+
+    # Создаем окно для ввода параметров
+    window = tk.Tk()
+    window.title("Параметры кластеризации")
+
+    label_cluster_count = tk.Label(window, text="Количество кластеров:")
+    label_cluster_count.pack(pady=5)
+    entry_cluster_count = tk.Entry(window)
+    entry_cluster_count.pack(pady=5)
+
+    label_group_count = tk.Label(window, text="Количество групп:")
+    label_group_count.pack(pady=5)
+    entry_group_count = tk.Entry(window)
+    entry_group_count.pack(pady=5)
+
+    button_ok = tk.Button(window, text="Окей", command=save_parameters)
+    button_ok.pack(pady=20)
+
+    window.mainloop()
+
+
+def get_clusterization_three():
+    try:
+        df = pd.read_excel('user_database_1.xlsx')
+    except FileNotFoundError:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Ошибка", "Файл 'user_database_1.xlsx' не найден!")
+        return
+
+    def process_user_data(df):
+        user_data = []
+        user = {}
+
+        for index, row in df.iterrows():
+            if pd.notna(row['Имя']):
+                if user and user['Группы']:
+                    user_data.append(user)
+                user = {
+                    'Имя': row['Имя'],
+                    'Фамилия': row['Фамилия'],
+                    'Id': row['Id пользователя'],
+                    'Группы': [],
+                    'Направление': []
+                }
+
+            if pd.notna(row['Id группы']):
+                user['Группы'].append(row['Id группы'])
+            if pd.notna(row['Направление']):
+                user['Направление'].append(row['Направление'])
+
+        if user and user['Группы']:
+            user_data.append(user)
+
+        return user_data
+
+    user_data = process_user_data(df)
+
+    group_theme_map = {}
+    for index, row in df.iterrows():
+        group_id = row.get('Id группы')
+        theme = row.get('Направление')
+        if pd.notna(group_id) and pd.notna(theme):
+            group_theme_map[group_id] = theme
+
+    directions = set()
+    for user in user_data:
+        directions.update(user['Направление'])
+
+    direction_encoder = LabelEncoder()
+    direction_encoder.fit(list(directions))
+
+    def get_direction_embeddings(user):
+        return direction_encoder.transform(user['Направление']).tolist()
+
+    for user in user_data:
+        user['Direction_Embedding'] = get_direction_embeddings(user)
+
+    group_counter = Counter()
+    for user in user_data:
+        group_counter.update(user['Группы'])
+
+    popular_groups = [group for group, _ in group_counter.most_common(group_count)]
+
+    print(f"\nТОП {group_count} самых популярных групп и их тематика:")
+    for group_id in popular_groups:
+        theme = group_theme_map.get(group_id, "Нет данных")
+        print(f"Группа ID: {group_id} | Тематика: {theme}")
+
+    def get_popular_group_directions(user):
+        user_groups = set(user['Группы'])
+        directions = []
+        for group in user_groups:
+            if group in popular_groups:
+                theme = group_theme_map.get(group)
+                if theme:
+                    directions.append(theme)
+        return list(set(directions))
+
+    for user in user_data:
+        user['Popular_Group_Directions'] = get_popular_group_directions(user)
+
+    def get_cluster_feature_vector(user):
+        popular_group_ids = [group for group in user['Группы'] if group in popular_groups]
+        group_ids_embedding = np.mean([group_id for group_id in popular_group_ids], axis=0) if popular_group_ids else 0
+
+        direction_embedding = np.mean(user['Direction_Embedding']) if user['Direction_Embedding'] else 0
+
+        return [group_ids_embedding, direction_embedding]
+
+    X = []
+    filtered_users = []
+
+    for user in user_data:
+        if not user['Группы']:
+            continue
+
+        feature_vector = get_cluster_feature_vector(user)
+        X.append(feature_vector)
+        filtered_users.append(user)
+
+    X = np.array(X)
+
+    if len(X) == 0:
+        print("Недостаточно данных для кластеризации.")
+        return
+
+    kmeans = KMeans(n_clusters=cluster_count, random_state=42)
+    kmeans.fit(X)
+    user_clusters = kmeans.predict(X)
+
+    for i, user in enumerate(filtered_users):
+        user['Cluster'] = user_clusters[i]
+
+    plt.figure(figsize=(10, 6))
+    scatter = plt.scatter(X[:, 0], X[:, 1], c=user_clusters, cmap='viridis')
+
+    plt.xlabel('ID групп популярных групп')
+    plt.ylabel('Тематики и направления групп')
+    plt.title('Кластеры пользователей на основе ID групп популярных групп и направлений')
+
+    labels = [f"{user['Имя']} {user['Фамилия']}" for user in filtered_users]
+    mplcursors.cursor(scatter, hover=True).connect(
+        "add", lambda sel: sel.annotation.set_text(labels[sel.index])
+    )
+
+    plt.colorbar(scatter)
+    plt.show()
